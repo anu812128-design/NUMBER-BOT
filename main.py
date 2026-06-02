@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram OSINT Bot - Flask Webhook Version for Render
+# Telegram OSINT Bot - Auto Webhook for Render
 
 import os
 import json
@@ -8,7 +8,6 @@ import time
 import requests
 import hashlib
 import threading
-from datetime import datetime
 from typing import Dict, Any, Optional
 import logging
 from flask import Flask, request, jsonify
@@ -16,7 +15,7 @@ from flask import Flask, request, jsonify
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8862514002:AAH73OEOZzyC5DPcMlzm1c6xu-1fWmHCwpc')
 API_URL = f'https://api.telegram.org/bot{BOT_TOKEN}/'
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')  # Set this in Render env vars
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 PORT = int(os.environ.get('PORT', 10000))
 
 # API Endpoints
@@ -35,7 +34,6 @@ CACHE_DIR = './cache'
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -105,7 +103,7 @@ def save_state(chat_id: str, state: Dict) -> None:
     except Exception as e:
         logger.error(f"Failed to save state: {e}")
 
-# ==================== TELEGRAM API FUNCTIONS ====================
+# ==================== TELEGRAM API ====================
 def send_message(chat_id: str, text: str, reply_markup: Dict = None) -> Optional[Dict]:
     payload = {
         'chat_id': chat_id,
@@ -282,7 +280,7 @@ def format_vehicle_response(response: str, term: str, retry: bool = True) -> str
     response = clean_response(response)
     return f"<b>VEHICLE LOOKUP RESULT</b>\n\n{'='*30}\n\n{response}\n\n{'='*30}"
 
-# ==================== LOOKUP CONFIGURATION ====================
+# ==================== LOOKUP CONFIG ====================
 LOOKUPS = {
     'NUMBER LOOKUP': {
         'stage': 'awaiting_number',
@@ -365,7 +363,7 @@ def get_format_func(func_name: str):
     }
     return funcs.get(func_name, format_number_response)
 
-# ==================== MAIN BOT LOGIC ====================
+# ==================== BOT LOGIC ====================
 def handle_message(update: Dict) -> None:
     message = update.get('message')
     callback = update.get('callback_query')
@@ -386,7 +384,6 @@ def handle_message(update: Dict) -> None:
     state = load_state(chat_id)
     logger.info(f"Chat {chat_id}: text='{text}', stage={state.get('stage', 'idle')}")
 
-    # Handle /start command
     if text == '/start':
         welcome_caption = """Welcome To - OSINT Information Bot
 
@@ -398,14 +395,12 @@ Free Bot And Unlimited"""
         save_state(chat_id, state)
         return
 
-    # Handle cancel button
     if text == 'CANCEL':
         send_message(chat_id, "Cancelled.", get_main_keyboard())
         state = {'stage': 'idle'}
         save_state(chat_id, state)
         return
 
-    # Check if message is a lookup button
     for btn_text, cfg in LOOKUPS.items():
         if text == btn_text:
             send_message(chat_id, cfg['prompt'], get_cancel_keyboard())
@@ -424,7 +419,6 @@ Free Bot And Unlimited"""
             logger.info(f"Chat {chat_id}: Set stage to {cfg['stage']}")
             return
 
-    # Handle input for lookups
     awaiting_stages = [
         'awaiting_number', 'awaiting_aadhaar', 'awaiting_family',
         'awaiting_pincode', 'awaiting_ifsc', 'awaiting_instagram',
@@ -434,15 +428,12 @@ Free Bot And Unlimited"""
     if state.get('stage') in awaiting_stages:
         query = text
 
-        # Remove +91 prefix for number lookup
         if state['stage'] == 'awaiting_number':
             query = query.replace('+91', '').replace('+', '')
 
-        # Clean if needed
         if state.get('clean') == 'upper':
             query = query.upper()
 
-        # Validate pattern
         if 'pattern' in state:
             if not re.match(state['pattern'], query):
                 error_msg = state.get('error_msg', "Invalid input format! Please try again.")
@@ -467,7 +458,6 @@ Free Bot And Unlimited"""
             send_message(chat_id, "Invalid input! Please try again.", get_cancel_keyboard())
         return
 
-    # Unknown command
     if text and not text.startswith('/'):
         send_message(chat_id, "Unknown command. Use buttons.", get_main_keyboard())
 
@@ -491,10 +481,22 @@ def webhook():
 def health():
     return jsonify({'status': 'ok'}), 200
 
+# ==================== AUTO WEBHOOK SETUP ====================
 def setup_webhook():
-    """Set Telegram webhook on startup"""
-    if WEBHOOK_URL:
+    """Auto-detect and set Telegram webhook on startup"""
+    webhook_url = None
+
+    # Render automatically sets RENDER_EXTERNAL_URL
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if render_url:
+        webhook_url = f"{render_url}/webhook"
+        logger.info(f"Detected Render URL: {render_url}")
+
+    # Fallback to manually set WEBHOOK_URL
+    if not webhook_url and WEBHOOK_URL:
         webhook_url = f"{WEBHOOK_URL}/webhook"
+
+    if webhook_url:
         try:
             response = requests.post(
                 API_URL + 'setWebhook',
@@ -508,6 +510,8 @@ def setup_webhook():
                 logger.error(f"Failed to set webhook: {result}")
         except Exception as e:
             logger.error(f"Webhook setup error: {e}")
+    else:
+        logger.warning("No webhook URL detected. Set WEBHOOK_URL env var or deploy on Render.")
 
 if __name__ == '__main__':
     setup_webhook()
