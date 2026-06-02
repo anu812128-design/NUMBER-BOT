@@ -10,7 +10,7 @@ import hashlib
 import threading
 from datetime import datetime
 from typing import Dict, Any, Optional
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 import logging
 
 # Configure logging
@@ -467,33 +467,45 @@ def answer_callback(callback_id: str, text: str = "") -> None:
         logger.error(f"Failed to answer callback: {e}")
 
 
-# ==================== HEALTH CHECK SERVER (for Render) ====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'Bot is running!')
+# ==================== FLASK APP (required for Render/gunicorn) ====================
+app = Flask(__name__)
 
-    def log_message(self, format, *args):
-        pass  # Suppress HTTP logs
+@app.route('/')
+def health():
+    return 'Bot is running!', 200
 
 
-def start_health_server():
-    """Start HTTP server so Render can bind to PORT"""
-    port = int(os.environ.get('PORT', 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    logger.info(f"Health check server running on port {port}")
-    server.serve_forever()
+def start_bot_polling():
+    """Run Telegram long-polling in background thread"""
+    logger.info("Bot polling started...")
+    last_update_id = 0
+    while True:
+        try:
+            response = requests.get(
+                API_URL + 'getUpdates',
+                params={'offset': last_update_id + 1, 'timeout': 30},
+                timeout=35
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    for update in data.get('result', []):
+                        last_update_id = update['update_id']
+                        handle_message(update)
+            time.sleep(1)
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            time.sleep(5)
+
+
+# Start bot polling when gunicorn loads this module
+bot_thread = threading.Thread(target=start_bot_polling, daemon=True)
+bot_thread.start()
 
 
 def main():
-    """Main bot loop"""
+    """Main bot loop (for local/direct run)"""
     logger.info("Bot started. Polling for updates...")
-
-    # Start health check server in background thread (required for Render)
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
 
     last_update_id = 0
     
